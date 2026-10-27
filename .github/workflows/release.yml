@@ -1,0 +1,92 @@
+# Builds the signed APK and publishes it as a GitHub Release when a version
+# tag is pushed (scripts/release.mjs makes the tag). The APK is always named
+# OpenLibrus.apk, so releases/latest/download/OpenLibrus.apk in the README
+# always points to the newest version.
+#
+# Secrets (scripts/set-release-secrets.sh sets them from your machine):
+#   OPENLIBRUS_KEYSTORE_B64     the .jks file, base64
+#   OPENLIBRUS_STORE_PASSWORD   its password
+#   OPENLIBRUS_KEY_ALIAS        the key's alias
+#   OPENLIBRUS_KEY_PASSWORD     the key's password
+
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches app.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(node -p "require('./app.json').expo.version")
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match app.json version $version"; exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck and lint
+        run: npm run typecheck && npm run lint
+
+      - name: Generate the Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Build the signed APK
+        env:
+          KEYSTORE_B64: ${{ secrets.OPENLIBRUS_KEYSTORE_B64 }}
+          # Gradle reads ORG_GRADLE_PROJECT_* as project properties, which is
+          # what plugins/withReleaseSigning.js looks for.
+          ORG_GRADLE_PROJECT_OPENLIBRUS_STORE_PASSWORD: ${{ secrets.OPENLIBRUS_STORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_OPENLIBRUS_KEY_ALIAS: ${{ secrets.OPENLIBRUS_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_OPENLIBRUS_KEY_PASSWORD: ${{ secrets.OPENLIBRUS_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then echo "OPENLIBRUS_KEYSTORE_B64 is not set"; exit 1; fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          export ORG_GRADLE_PROJECT_OPENLIBRUS_STORE_FILE="$RUNNER_TEMP/release.jks"
+          cd android
+          ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+          rm "$RUNNER_TEMP/release.jks"
+
+      - name: Check the signature and write the release notes
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          cp "$apk" OpenLibrus.apk
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          cert=$("$apksigner" verify --print-certs OpenLibrus.apk | grep 'SHA-256 digest' | head -1 | awk '{print $NF}')
+          sum=$(sha256sum OpenLibrus.apk | awk '{print $1}')
+          {
+            echo "Pobierz **OpenLibrus.apk** poniżej i otwórz go w telefonie."
+            echo
+            echo "Download **OpenLibrus.apk** below and open it on your phone."
+            echo
+            echo "Signing certificate SHA-256: \`$cert\`"
+            echo
+            echo "APK SHA-256: \`$sum\`"
+          } > notes.md
+          cat notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" OpenLibrus.apk --title "OpenLibrus ${GITHUB_REF_NAME#v}" --notes-file notes.md
