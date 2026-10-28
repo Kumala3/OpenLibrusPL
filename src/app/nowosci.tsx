@@ -53,7 +53,7 @@ export default function Nowosci() {
   return (
     <ScrollView
       style={{ backgroundColor: t.bg }}
-      contentContainerStyle={{ padding: space.lg, paddingTop: space.lg, paddingBottom: insets.bottom + space.xxl }}>
+      contentContainerStyle={{ padding: space.lg, paddingTop: insets.top + space.lg, paddingBottom: insets.bottom + space.xxl }}>
       <View style={styles.top}>
         <Text style={[type.largeTitle, { color: t.ink, flex: 1 }]}>Co nowego</Text>
         <Pressable onPress={() => router.back()} hitSlop={10} accessibilityRole="button" accessibilityLabel="Zamknij">
